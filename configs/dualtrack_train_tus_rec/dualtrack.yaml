@@ -1,0 +1,45 @@
+model: 
+  name: dualtrack_fusion_model
+  global_encoder_cfg: 
+    name: global_encoder_cnn
+    checkpoint: /path/to/glob_enc.pt
+  local_encoder_cfg: 
+    name: dualtrack_loc_enc_stg3_legacy
+    checkpoint: /path/to/loc_enc.pt
+    freeze_backbone: true
+    use_cache: true
+
+data: 
+  dataset: tus-rec
+  num_workers: 1
+  global_encoder_preprocessing_kw:  
+    in_channels: 1
+    mean: [0.5] 
+    std: [0.25]
+    resize_to: [224, 224]
+  local_encoder_preprocessing_kw: 
+    resize_to: [256, 256]
+  use_augmentations: false
+  load_preprocessed_images_from_disk: true
+  batch_size: 1
+  subsequence_length_train: null
+  
+train: 
+  lr: 0.0001
+  epochs: 500
+  warmup_epochs: 10
+  weight_decay: 0.0
+  val_every: 10
+
+seed: 0
+device: cuda
+use_amp: true
+
+logger: wandb
+logger_kw: 
+  wandb_project: dualtrack
+evaluator_kw:   
+  include_images: true
+
+debug: false
+resume: false

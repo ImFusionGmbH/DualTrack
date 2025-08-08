@@ -1,0 +1,32 @@
+model:
+  name: dualtrack_loc_enc_stg2
+  backbone_weights: null # stage1_log_dir/checkpoints/best.pt
+  freeze_backbone: false  # true if loading checkpoint
+
+data:
+  version: local_encoder
+  sequence_length_train: 16
+  batch_size: 16
+  dataset: tus-rec
+  augmentations: true
+
+train:
+  lr: 0.001
+  epochs: 500
+  warmup_epochs: 0
+  weight_decay: 0.0
+  batch_size: 1
+  val_every: 10
+
+seed: 0
+device: cuda
+use_amp: true
+
+logger: wandb
+logger_kw:
+  wandb_project: dualtrack
+evaluator_kw:
+  include_images: true
+
+debug: false
+resume: false

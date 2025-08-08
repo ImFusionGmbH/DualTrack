@@ -1,0 +1,34 @@
+model:
+  name: dualtrack_loc_enc_stg3_legacy
+  backbone_cfg:
+    max_subsequence_size: 1024
+  max_position_embeddings: 4096
+  freeze_backbone: true
+  use_cache: true
+  backbone_weights: null # stage1_log_dir/checkpoints/best.pt
+
+data:
+  version: local_encoder
+  dataset: tus-rec
+
+train:
+  lr: 0.0001
+  epochs: 500
+  warmup_epochs: 0
+  weight_decay: 0.0
+  batch_size: 1
+  val_every: 10
+
+seed: 0
+device: cuda
+use_amp: true
+
+logger: wandb
+logger_kw:
+  wandb_project: dualtrack
+  log_level: 10 # debug
+evaluator_kw:
+  include_images: true
+
+debug: false
+resume: false

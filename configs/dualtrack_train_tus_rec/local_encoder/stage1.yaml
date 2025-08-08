@@ -1,0 +1,29 @@
+model:
+  name: dualtrack_loc_enc_stg1
+
+data:
+  version: local_encoder
+  dataset: tus-rec
+  sequence_length_train: 16
+  augmentations: true
+
+train:
+  lr: 0.0001
+  epochs: 5000
+  warmup_epochs: 0
+  weight_decay: 0.001
+  batch_size: 16
+  val_every: 100
+
+seed: 0
+device: cuda
+use_amp: true
+
+logger: wandb
+logger_kw:
+  wandb_project: dualtrack
+evaluator_kw:
+  include_images: true
+
+debug: false
+resume: false

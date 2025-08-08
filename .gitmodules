@@ -1,0 +1,9 @@
+[submodule "external/FreehandUSRecon"]
+	path = external/FreehandUSRecon
+	url = https://github.com/DIAL-RPI/FreehandUSRecon
+[submodule "external/prostNfound"]
+	path = external/prostNfound
+	url = https://github.com/pfrwilson/prostNfound
+[submodule "external/USFM"]
+	path = external/USFM
+	url = https://github.com/openmedlab/USFM
