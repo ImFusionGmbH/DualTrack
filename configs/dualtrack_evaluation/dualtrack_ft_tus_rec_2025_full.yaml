@@ -1,0 +1,85 @@
+model:
+  name: dualtrack_fusion_model
+  global_encoder_cfg:
+    name: global_encoder_cnn
+    max_position_embeddings: 4096
+    max_seq_length: 4096
+    features_only: true
+  local_encoder_cfg:
+    name: dualtrack_loc_enc_stg3_legacy
+    backbone_cfg:
+      max_subsequence_size: 1024
+    max_position_embeddings: 4096
+    freeze_backbone: true
+    use_cache: true
+    features_only: true
+  max_position_embeddings: 4096
+  load_kw:
+    strict: false
+    handle_size_mismatch: true
+  checkpoint: data/checkpoints/dualtrack_ft.pt # Will be overrided by --
+
+model_input_keymap:
+  global_encoder_inputs: global_encoder_images
+  local_encoder_inputs: local_encoder_images
+
+data:
+  version: custom
+  dataset: tus-rec-2025-val
+  num_dataloader_workers: 0
+  persistent_workers: false
+  batch_size: 1
+  sequence_length_train: null
+  transform_kwargs:
+    transform_version: fusion
+    include_raw_images: true 
+    random_reverse_sweep: true
+    random_subsample_sequence: true
+    random_horizontal_flip: true
+    global_encoder_preprocessing_kw:
+      in_channels: 1
+      mean:
+      - 0
+      std:
+      - 1
+      resize_to:
+      - 224
+      - 224
+    local_encoder_preprocessing_kw:
+      resize_to: null
+    load_preprocessed_images_from_disk: true
+  dataset_kwargs:
+    mode: h5_dynamic_load
+  sequence_keys:
+  - images
+  - images_downsampled-224
+  - tracking
+  no_distributed_val_sampler: true
+
+train:
+  lr: 0.0001
+  epochs: 200
+  warmup_epochs: 1
+  weight_decay: 0
+  val_every: 1
+  
+seed: 0
+device: cuda
+use_amp: true
+logger: wandb
+logger_kw:
+  wandb_project: dualtrack
+evaluator_kw:
+  include_images: true
+debug: false
+do_distributed_training: true
+
+slurm:
+  nodes: 1
+  mem_gb: 490
+  tasks_per_node: 4
+  slurm_gres: gpu:4
+  timeout_min: 480
+  slurm_exclude: kn068
+
+tracked_metric: "ddf/5pt-avg_global_displacement_error/val-tus-rec-2025-val"

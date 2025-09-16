@@ -1,0 +1,30 @@
+model: 
+  name: dualtrack_tus_rec_2024
+
+data: 
+  dataset: tus-rec-val
+  num_workers: 1
+  global_encoder_preprocessing_kw:  
+    in_channels: 1
+    mean: [0]
+    std: [1]
+    resize_to: [224, 224]
+  use_augmentations: false
+  load_preprocessed_images_from_disk: false
+  batch_size: 1
+  features_paths: {}
+  subsequence_length_train: null
+
+train: 
+  lr: 0.0001
+  epochs: 800
+  warmup_epochs: 10
+  weight_decay: 0.0
+  val_every: 10
+
+seed: 0
+device: cuda
+use_amp: true
+
+logger: wandb
+debug: false
