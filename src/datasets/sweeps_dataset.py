@@ -268,7 +268,8 @@ class SweepsDataset(Dataset):
         out["stop_idx"] = stop_idx
 
         metadata = self.metadata.iloc[i].to_dict()
-        out.update(metadata)
+        #out.update(metadata)
+        out['sweep_id'] = metadata['sweep_id']
         sweep_id = out['sweep_id']
 
         out.update(

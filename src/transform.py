@@ -7,9 +7,9 @@ from typing import Literal, Sequence
 import warnings
 
 import numpy as np
-import torch
 from git import Optional
 from torchvision.transforms.v2 import *
+import torch
 
 from .utils.pose import invert_pose_matrix, matrix_to_pose_vector
 
@@ -52,19 +52,21 @@ class Add6DOFTargets:
     Add relative transformations as 6 degrees of freedom format as targets for the given data item.
     """
 
-    targets_mode: tuple[str, str] = ("local", 'global')  # unused
+    targets_mode: tuple[str, str] = ("local", "global")  # unused
     smooth_targets: Optional[int] = None
 
     def __call__(self, item):
-        if "tracking" not in item: 
+        if "tracking" not in item:
             warnings.warn(f"Tracking not found in data item. This will be a no-op.")
             return item
 
         gt_tracking_world = item["tracking"]
 
         targets_absolute = matrix_to_pose_vector(gt_tracking_world)
-        if 'absolute' in self.targets_mode:
-            item['targets_absolute'] = torch.tensor(targets_absolute, dtype=torch.float32)
+        if "absolute" in self.targets_mode:
+            item["targets_absolute"] = torch.tensor(
+                targets_absolute, dtype=torch.float32
+            )
 
         # set to global relative to first frame
         gt_tracking = (
@@ -91,14 +93,14 @@ class Add6DOFTargets:
         targets_local = matrix_to_pose_vector(targets_local)
         targets_local = torch.tensor(targets_local, dtype=torch.float32)
 
-        if 'local' in self.targets_mode:
+        if "local" in self.targets_mode:
             item["targets"] = targets_local
 
         targets_global = gt_tracking[1:]  # skip first pose as it is always identity
         targets_global = matrix_to_pose_vector(targets_global)
         targets_global = torch.tensor(targets_global, dtype=torch.float32)
-        
-        if 'global' in self.targets_mode:
+
+        if "global" in self.targets_mode:
             item["targets_global"] = targets_global
 
         return item
@@ -113,7 +115,7 @@ class FramesArrayToTensor:
     key: str = "images"
 
     def __call__(self, item):
-        if self.key in item: 
+        if self.key in item:
             item[self.key] = self.transform(item[self.key])
         return item
 
@@ -135,12 +137,12 @@ class ApplyToDictFields:
         self.keys = keys
         self._transform = transform
 
-    def transform(self, img): 
+    def transform(self, img):
         return self._transform(img)
 
     def __call__(self, item):
         for key in self.keys:
-            if key in item: 
+            if key in item:
                 item[key] = self.transform(item[key])
         return item
 
@@ -203,7 +205,7 @@ class ImagePreprocessingMedSAM(ApplyToDictFields):
 
 class SelectIndices:
 
-    def __init__(self, sequence_keys=["images", "tracking"]): 
+    def __init__(self, sequence_keys=["images", "tracking"]):
         self.sequence_keys = sequence_keys
 
     def __call__(self, item):
@@ -216,15 +218,15 @@ class SelectIndices:
             if key in item:
                 item[key] = item[key][i0:i1]
 
-        h5_keys = ['calibration', 'spacing', 'dimensions']
-        h5_keys.extend(item.get('_extra_h5_keys', []))
+        h5_keys = ["calibration", "spacing", "dimensions"]
+        h5_keys.extend(item.get("_extra_h5_keys", []))
 
         # item["calibration"] = item["calibration"][:]
         # item["spacing"] = item["spacing"][:]
         # item["dimensions"] = item["dimensions"][:]
 
-        for key in h5_keys: 
-            if key in item: 
+        for key in h5_keys:
+            if key in item:
                 item[key] = item[key][:]
 
         # item.pop("img")
@@ -358,9 +360,10 @@ class TrackedUltrasoundSweepTransform:
 
 
 class RandomPlaySweepBackwards:
-    def __init__(self, prob=0.5, image_keys=['images', 'features']):
+    def __init__(self, prob=0.5, image_keys=["images", "features"], keys=None):
         self.prob = prob
         self.image_keys = image_keys
+        self.keys = keys or image_keys + ["tracking"]
 
     def is_valid_image_key(self, key):
         return key in self.image_keys
@@ -368,17 +371,24 @@ class RandomPlaySweepBackwards:
     def __call__(self, item):
         if torch.rand((1,)).item() > self.prob:
             return item
-            
-        for key in [key for key in item.keys() if self.is_valid_image_key(key)]:
-            if key in item: 
-                item[key] = np.flip(item[key], 0).copy()
 
-        item["tracking"] = np.flip(item["tracking"], 0).copy()
+        for key in self.keys:
+            if key in item:
+                item[key] = np.flip(item[key], 0).copy()
         return item
+
+        # for key in [key for key in item.keys() if self.is_valid_image_key(key)]:
+        #     if key in item:
+        #         item[key] = np.flip(item[key], 0).copy()
+
+
+#
+# item["tracking"] = np.flip(item["tracking"], 0).copy()
+# return item
 
 
 class RandomHorizontalFlipImageAndTracking:
-    def __init__(self, p=0.5, image_keys=['images', 'features']):
+    def __init__(self, p=0.5, image_keys=["images"]):
         self.p = p
         self.image_keys = image_keys
 
@@ -552,17 +562,28 @@ class GenerateMultiCrop:
         return item
 
 
-@dataclass
 class CropAndUpdateTransforms:
-    shape: tuple[int, int]
-    crop_type: Literal["center", "random"] = "center"
+
+    def __init__(
+        self,
+        shape: tuple[int, int] | None,
+        crop_type: Literal["center", "random"] = "center",
+        image_key="images",
+        implementation_version=0,
+    ):
+        self.shape = shape
+        self.crop_type = crop_type
+        self.image_key=image_key
+        self.implementation_version = implementation_version
 
     def __call__(self, item):
-        if 'images' not in item:
+        if self.image_key not in item:
+            return item
+        if self.shape is None:
             return item
 
         item = item.copy()
-        img = item["images"]
+        img = item[self.image_key]
 
         px2img = item["calibration"]
         item["uncropped_img_tracking"] = item["tracking"]
@@ -578,36 +599,38 @@ class CropAndUpdateTransforms:
             raise NotImplementedError()
 
         img_cropped = functional.crop(img, top, left, height, width)
+        item[self.image_key] = img_cropped
 
-        spacing_ver = px2img[1, 1]
-        spacing_hor = px2img[0, 0]
+        if self.implementation_version == 0 or self.crop_type == "random": 
 
-        # get pixel 2 image cropped matrix
-        pixel2image_cropped = np.eye(4)
-        pixel2image_cropped[0, 0] = spacing_hor
-        pixel2image_cropped[1, 1] = spacing_ver
-        pixel2image_cropped[0, 3] = -width * spacing_hor / 2
-        pixel2image_cropped[1, 3] = -height * spacing_ver / 2
+            spacing_ver = px2img[1, 1]
+            spacing_hor = px2img[0, 0]
 
-        image2pixel_cropped = np.linalg.inv(pixel2image_cropped)
+            # get pixel 2 image cropped matrix
+            pixel2image_cropped = np.eye(4)
+            pixel2image_cropped[0, 0] = spacing_hor
+            pixel2image_cropped[1, 1] = spacing_ver
+            pixel2image_cropped[0, 3] = -width * spacing_hor / 2
+            pixel2image_cropped[1, 3] = -height * spacing_ver / 2
 
-        # get image cropped to image matrix in pixel coords
-        img_cropped_to_img_matrix_px = np.eye(4)
-        img_cropped_to_img_matrix_px[0, 3] = left
-        img_cropped_to_img_matrix_px[1, 3] = top
+            image2pixel_cropped = np.linalg.inv(pixel2image_cropped)
 
-        #
-        img_cropped_to_image = (
-            px2img @ img_cropped_to_img_matrix_px @ image2pixel_cropped
-        )
-        tracking_cropped_img_2_world = (
-            tracking_img_2_world @ img_cropped_to_image[None, ...]
-        )
+            # get image cropped to image matrix in pixel coords
+            img_cropped_to_img_matrix_px = np.eye(4)
+            img_cropped_to_img_matrix_px[0, 3] = left
+            img_cropped_to_img_matrix_px[1, 3] = top
 
-        item["img_cropped_to_image"] = img_cropped_to_image
-        item["tracking"] = tracking_cropped_img_2_world
-        item["images"] = img_cropped
-        item["calibration"] = pixel2image_cropped
+            #
+            img_cropped_to_image = (
+                px2img @ img_cropped_to_img_matrix_px @ image2pixel_cropped
+            )
+            tracking_cropped_img_2_world = (
+                tracking_img_2_world @ img_cropped_to_image[None, ...]
+            )
+
+            item["img_cropped_to_image"] = img_cropped_to_image
+            item["tracking"] = tracking_cropped_img_2_world
+            item["calibration"] = pixel2image_cropped
 
         return item
 
@@ -636,56 +659,56 @@ class RegularSparseSampleTemporal:
     def __call__(self, item):
         step = self.sample_every
         start = random.randint(0, self.sample_every - 1) if self.random_offset else 0
-        original_len = len(item['tracking'])
+        original_len = len(item["tracking"])
 
         sequence_keys = ["images", "tracking", *item.get("_extra_sequence_keys")]
         for key in sequence_keys:
             item[key] = item[key][start::step]
 
-        item['sample_indices'] = torch.arange(original_len)[start::step]
+        item["sample_indices"] = torch.arange(original_len)[start::step]
 
         return item
 
 
-class RandomSparseSampleTemporal: 
-    def __init__(self, n_samples=32, apply_indexing=True): 
-        self.n_samples = n_samples 
+class RandomSparseSampleTemporal:
+    def __init__(self, n_samples=32, apply_indexing=True):
+        self.n_samples = n_samples
         self.apply_indexing = apply_indexing
 
-    def __call__(self, item): 
+    def __call__(self, item):
         i0 = item["start_idx"]
         i1 = item["stop_idx"]
 
-        samples = torch.sort(torch.randperm(i1 - i0)[:self.n_samples]).values
+        samples = torch.sort(torch.randperm(i1 - i0)[: self.n_samples]).values
         samples = torch.arange(i0, i1)[samples]
 
-        item['sample_indices'] = samples
+        item["sample_indices"] = samples
         if not self.apply_indexing:
             return item
 
-        N = len(item['tracking'])
+        N = len(item["tracking"])
 
         sequence_keys = ["images", "tracking", *item.get("_extra_sequence_keys")]
         for key in sequence_keys:
             if key in item:
                 item[key] = item[key][samples]
-        
-        h5_keys = ['calibration', 'spacing', 'dimensions']
-        h5_keys.extend(item.get('_extra_h5_keys', []))
+
+        h5_keys = ["calibration", "spacing", "dimensions"]
+        h5_keys.extend(item.get("_extra_h5_keys", []))
 
         # item["calibration"] = item["calibration"][:]
         # item["spacing"] = item["spacing"][:]
         # item["dimensions"] = item["dimensions"][:]
 
-        for key in h5_keys: 
-            if key in item: 
+        for key in h5_keys:
+            if key in item:
                 item[key] = item[key][:]
 
-        return item 
+        return item
 
 
 class RepeatChannels(ApplyToDictFields):
-    def __init__(self, keys=['images'], channels=1):
+    def __init__(self, keys=["images"], channels=1):
         super().__init__(keys)
         self.channels = channels
 
@@ -693,9 +716,49 @@ class RepeatChannels(ApplyToDictFields):
         return img.repeat([1, self.channels, 1, 1])
 
 
-class CropAndDownsampleForContextImages: 
-    def __call__(self, img): 
+class CropAndDownsampleForContextImages:
+    def __call__(self, img):
         return Compose([CenterCrop((380, 540)), Resize((224, 224))])(img)
+
+
+class RandomSubsampleSequence:
+    def __init__(
+        self, p=0.5, drop_rate=0.1, keys=["images", "tracking"], return_indices=False
+    ):
+        self.p = p
+        self.drop_rate = drop_rate
+        self.keys = keys
+        self.return_indices = return_indices
+
+    def __call__(self, item: dict):
+        if torch.rand((1,)).item() >= self.p:
+            return item
+
+        indices = None
+        N = None
+        for key in self.keys:
+            if key not in item:
+                continue
+
+            element = item[key]
+            if N is None:
+                N = len(element)
+            else:
+                assert (
+                    len(element) == N
+                ), f"All sequence elements must have the same length"
+
+            if indices is None:
+                indices = torch.sort(
+                    torch.randperm(N)[: int(N * (1 - self.drop_rate))]
+                ).values.numpy()
+            
+            item[key] = item[key][indices]
+
+        if self.return_indices: 
+            item['subsample_indices'] = indices
+
+        return item
 
 
 @applies_to_dict("images")

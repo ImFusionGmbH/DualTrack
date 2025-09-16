@@ -3,6 +3,8 @@ from typing import Optional
 
 from matplotlib import pyplot as plt
 from matplotlib.figure import Figure
+import numpy as np
+import torch
 from src.utils.pose import (
     compute_mean_average_errors,
     get_ddf_metrics,
@@ -34,6 +36,12 @@ class TrackingEstimationEvaluator:
         self.include_mae_metrics = include_mae_metrics
 
         self._current_update_cache = {}
+        self._is_distributed = dist.is_initialized() and dist.get_world_size() > 1
+
+        if self._is_distributed: 
+            self._is_main_rank = dist.get_rank() == 0
+        else: 
+            self._is_main_rank = True
 
     def __call__(
         self,
@@ -197,11 +205,41 @@ class TrackingEstimationEvaluator:
         metrics = {}
 
         for key, value in self.metrics.items():
-            metrics[key] = sum(value) / len(value)  # average across scans
+            # value is a list. if we are in a distributed environment, we'll have to concatenate 
+            # across processes before reducing. 
+            if self._is_distributed: 
+                # Convert to numpy array for convenience
+                mean = global_mean(value)
+            else: 
+                mean = sum(value) / len(value)
 
-        for key, value in self.images.items():
-            metrics[key] = value
+            metrics[key] = mean  # average across scans
+
+        if self._is_main_rank: 
+            for key, value in self.images.items():
+                metrics[key] = value
 
         return metrics
-
     
+
+
+def global_mean(local_floats):
+    """
+    Compute global mean of a list of floats across all processes in DDP.
+    """
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    # Convert local list to tensor
+    local_tensor = torch.tensor(local_floats, dtype=torch.float64, device=device)
+    
+    # Local sum and count
+    local_sum = torch.sum(local_tensor)
+    local_count = torch.tensor([local_tensor.numel()], dtype=torch.float64, device=device)
+
+    # Global sum and count
+    dist.all_reduce(local_sum, op=dist.ReduceOp.SUM)
+    dist.all_reduce(local_count, op=dist.ReduceOp.SUM)
+
+    # Compute global mean
+    global_mean = local_sum / local_count
+    return global_mean.item()

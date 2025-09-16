@@ -1,21 +1,21 @@
-
 import torch.nn as nn
 import logging
 import os
 
 from src.utils import load_model_weights
 from functools import wraps
-import torch 
+import torch
 
 
 _MODELS = {}
 
 
 def lyric_dragon_checkpoint(drop_keys=[]):
-    checkpoint_path = os.environ.get("LYRIC_DRAGON_CHECKPOINT", "experiments/good_runs/lyric-dragon/checkpoint/best.pt")
-    orig_state = torch.load(checkpoint_path)[
-        "model"
-    ]
+    checkpoint_path = os.environ.get(
+        "LYRIC_DRAGON_CHECKPOINT",
+        "experiments/good_runs/lyric-dragon/checkpoint/best.pt",
+    )
+    orig_state = torch.load(checkpoint_path)["model"]
     state = {}
     for key in orig_state:
         should_drop = False
@@ -29,7 +29,10 @@ def lyric_dragon_checkpoint(drop_keys=[]):
 
 
 _REGISTERED_CHECKPOINTS = {
-    "lyric-dragon": lambda: os.environ.get("LYRIC_DRAGON_CHECKPOINT", "experiments/good_runs/lyric-dragon/checkpoint/best.pt"),
+    "lyric-dragon": lambda: os.environ.get(
+        "LYRIC_DRAGON_CHECKPOINT",
+        "experiments/good_runs/lyric-dragon/checkpoint/best.pt",
+    ),
     "lyric_dragon_flexible_load": lyric_dragon_checkpoint,
 }
 
@@ -38,18 +41,20 @@ def register_model(fn):
     name = fn.__name__
 
     @wraps(fn)
-    def wrapper(**kwargs): 
+    def wrapper(**kwargs):
         model = fn(**kwargs)
-        if model is None: 
+        if model is None:
             return model
         n_params = sum(p.numel() for p in model.parameters())
-        n_trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        n_trainable_params = sum(
+            p.numel() for p in model.parameters() if p.requires_grad
+        )
         logging.info(
             f"Built model {name} with {n_params/1e6:.2f}M params and {n_trainable_params/1e6:.2f}M trainable params"
-        )        
-        config=dict(name=name, **kwargs)
+        )
+        config = dict(name=name, **kwargs)
         logging.info(f"model config {kwargs}")
-        model.registry_config = config 
+        model.registry_config = config
         return model
 
     _MODELS[name] = wrapper
@@ -61,9 +66,28 @@ def list_models():
 
 
 def get_model(
-    name, checkpoint=None, checkpoint_kw={}, load_kw=dict(strict=False), seed=0, **kwargs
+    name=None,
+    checkpoint=None,
+    checkpoint_kw={},
+    load_kw=dict(strict=False),
+    config=None,
+    config_path=None,
+    **kwargs,
 ) -> nn.Module:
-    torch.random.manual_seed(seed)
+
+    if config is not None:
+        assert config_path is None
+        if "model" in config:
+            return get_model(**config["model"])
+        else: 
+            return get_model(**config)
+
+    if config_path is not None: 
+        assert config is None 
+        from omegaconf import OmegaConf
+        config = OmegaConf.load(config_path)
+        return get_model(config=config)
+
     model = _MODELS[name](**kwargs)
 
     if checkpoint:

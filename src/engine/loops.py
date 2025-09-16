@@ -5,7 +5,6 @@ from typing import Callable, Literal
 import h5py
 from matplotlib import pyplot as plt
 from tqdm import tqdm
-from src.engine.tracking_estimator import BaseTrackingEstimator
 from src.logger import Logger
 import torch
 from src.evaluator import TrackingEstimationEvaluator
@@ -15,7 +14,18 @@ import pandas as pd
 import time
 from pathlib import Path
 import logging
+from src.optimizer.sharpness_aware_minimization import SAM, sam_optimizer_step
 from src.utils.pose import get_global_and_relative_pred_trackings_from_vectors
+from torch.nn.parallel import DistributedDataParallel
+from typing import Protocol, runtime_checkable
+from torch import distributed as dist
+
+
+@runtime_checkable
+class TrackingEstimatorProtocol(Protocol):
+    def predict(self, batch) -> torch.Tensor: ...
+
+    def get_loss(self, batch, pred=None): ...
 
 
 class RelativeTrackingPredictionLogic(abc.ABC):
@@ -83,13 +93,13 @@ def run_full_evaluation_loop(
             if pred_logic:
                 pred = pred_logic(data, model, device)
             else:
-                assert isinstance(model, BaseTrackingEstimator)
+                assert isinstance(model, TrackingEstimatorProtocol)
                 pred = model.predict(data)
 
             if loss_fn is not None:
                 loss = loss_fn(data, model, device, pred=pred)
                 evaluator.add_metric("loss", loss.item())
-            elif isinstance(model, BaseTrackingEstimator):
+            elif isinstance(model, TrackingEstimatorProtocol):
                 loss = model.get_loss(data, pred=pred)
                 evaluator.add_metric("loss", loss.item())
 
@@ -167,36 +177,82 @@ def run_training_one_epoch(
 
     model.train()
     total_loss = 0
+    data_time = 0
+    compute_time = 0
+    iter_start_time = time.time()
+
+    if hasattr(loader.sampler, "set_epoch"):
+        loader.sampler.set_epoch(epoch)
+    
+    if torch.distributed.is_initialized():
+        torch.distributed.barrier()  # Ensure all processes start together
 
     with tqdm(loader, desc=f"Training epoch {epoch}") as pbar:
         for i, data in enumerate(pbar):
+            # Measure data loading time
+            data_load_time = time.time() - iter_start_time
+            data_time += data_load_time
+
             if max_iter_per_epoch is not None and i >= max_iter_per_epoch:
                 break
 
-            with torch.autocast(
-                torch.device(device).type,
-                torch.bfloat16 if use_bfloat else torch.float16,
-                enabled=use_amp,
-            ):
-                if loss_fn:
-                    loss = loss_fn(data, model, device)
-                else:
-                    assert isinstance(model, BaseTrackingEstimator)
-                    loss = model.get_loss(data)
+            # Start timing compute operations
+            compute_start_time = time.time()
 
-            optimizer.zero_grad()
+            def get_loss():
+                with torch.autocast(
+                    torch.device(device).type,
+                    torch.bfloat16 if use_bfloat else torch.float16,
+                    enabled=use_amp,
+                ):
+                    if loss_fn:
+                        loss = loss_fn(data, model, device)
+                    else:
+                        assert isinstance(model, TrackingEstimatorProtocol)
+                        loss = model.get_loss(data)
+                    return loss
 
-            scaler.scale(loss).backward()
-            if clip_grad_value or clip_grad_norm:
-                scaler.unscale_(optimizer)
-                if clip_grad_value:
-                    torch.nn.utils.clip_grad_value_(model.parameters(), clip_grad_value)
-                elif clip_grad_norm:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad_norm)
+            if isinstance(optimizer, SAM):
+                loss = sam_optimizer_step(
+                    optimizer,
+                    is_ddp=torch.distributed.is_initialized(),
+                    scaler=scaler,
+                    loss_closure=get_loss,
+                    model=model,
+                )
+            else: 
+                loss = get_loss()
+                optimizer.zero_grad()
+                scaler.scale(loss).backward()
+                
+                if clip_grad_value or clip_grad_norm:
+                    scaler.unscale_(optimizer)
+                    if clip_grad_value:
+                        torch.nn.utils.clip_grad_value_(model.parameters(), clip_grad_value)
+                    elif clip_grad_norm:
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad_norm)
 
-            scaler.step(optimizer)
-            scaler.update()
-            total_loss += loss.item()
+                scaler.step(optimizer)
+                scaler.update()
+
+            # Synchronize CUDA before timing measurements
+            if device.startswith("cuda"):
+                torch.cuda.synchronize()
+
+            # Measure compute time
+            compute_time += time.time() - compute_start_time
+
+            if loss is not None:
+                # sync loss across gpus
+                if dist.is_initialized():
+                    loss = loss.detach()
+                    dist.reduce(loss, 0)
+                    loss /= dist.get_world_size()
+
+                total_loss += loss.item()
+
+                if logger is not None:
+                    logger.log({"loss-step/train": loss.item()}, epoch)
 
             if scheduler_mode == "step":
                 scheduler.step()
@@ -209,16 +265,18 @@ def run_training_one_epoch(
                         epoch,
                     )
 
-            if logger is not None:
-                logger.log({"loss-step/train": loss.item()}, epoch)
-
             if i % 10 == 0:
                 pbar.set_postfix(
                     {
-                        "loss": total_loss / (i + 1),
+                        "loss": total_loss / (i + 1) if loss is not None else 0,
+                        "data_time": f"{data_time / (i + 1):.3f}s",
+                        "compute_time": f"{compute_time / (i + 1):.3f}s",
                         "mem": f"{torch.cuda.max_memory_reserved() / 1e9:.2f}GB",
                     }
                 )
+
+            # Reset timer for next iteration
+            iter_start_time = time.time()
 
     if logger is not None:
         logger.log(
@@ -259,15 +317,16 @@ def run_validation_loss_loop(
             torch.bfloat16 if use_bfloat else torch.float16,
             enabled=use_amp,
         ):
-            if loss_fn: 
+            if loss_fn:
                 loss = loss_fn(batch, model, device)
-            else: 
-                assert isinstance(model, BaseTrackingEstimator)
+            else:
+                assert isinstance(model, TrackingEstimatorProtocol)
                 loss = model.get_loss(batch)
 
-        total_loss += loss.item()
-        if logger is not None:
-            logger.log({"loss-step/val": loss.item()}, epoch)
+        if loss is not None:
+            total_loss += loss.item()
+            if logger is not None:
+                logger.log({"loss-step/val": loss.item()}, epoch)
 
     if logger is not None:
         logger.log({"loss/val": total_loss / len(loader)}, epoch)
@@ -349,7 +408,7 @@ def run_full_test_loop(
             if pred_logic:
                 pred = pred_logic(batch, model, device)
             else:
-                assert isinstance(model, BaseTrackingEstimator)
+                assert isinstance(model, TrackingEstimatorProtocol)
                 pred = model.predict(batch)
 
         # Update evaluator with predictions
@@ -369,6 +428,7 @@ def run_full_test_loop(
             spacing = batch["spacing"][0]
             dimensions = batch["dimensions"][0]
             targets = batch["targets"][0]
+            pixel_to_image = batch["pixel_to_image"][0]
 
             pred_tracking_sequence = (
                 get_global_and_relative_pred_trackings_from_vectors(
@@ -386,6 +446,7 @@ def run_full_test_loop(
                 f["dimensions"] = dimensions
                 f["gt_tracking"] = gt_tracking_sequence
                 f["pred_tracking"] = pred_tracking_sequence
+                f["pixel_to_image"] = pixel_to_image
 
         # Get metrics and figures
         metrics, figures = evaluator.complete_update(include_images=True)
@@ -399,7 +460,7 @@ def run_full_test_loop(
         # Record metrics
         predictions_table_row = {
             "sweep_id": batch["sweep_id"][0],
-            "raw_sweep_path": batch["raw_sweep_path"][0],
+            # "raw_sweep_path": batch["raw_sweep_path"][0],
             **metrics,
         }
         predictions_table.append(predictions_table_row)
@@ -412,7 +473,7 @@ def run_full_test_loop(
     metrics["max_mem"] = max_mem
 
     # Save average metrics
-    avg_metrics = results_df.drop(["sweep_id", "raw_sweep_path"], axis="columns").mean()
+    avg_metrics = results_df.drop(["sweep_id"], axis="columns").mean()
     avg_metrics.to_string(open(output_dir / "avg_metrics.txt", "w"))
     print("Average metrics:", avg_metrics)
     metrics.update(avg_metrics.to_dict())
@@ -457,6 +518,8 @@ def run_training(
     clip_grad_value=None,
     evaluator_kw={},
     log_image_indices=[],
+    config_dict={},
+    effective_epoch_length=None,
 ):
 
     if scaler is None:
@@ -464,12 +527,17 @@ def run_training(
 
     def get_state():
         return {
-            "model": model.state_dict(),
+            "model": (
+                model.module.state_dict()
+                if isinstance(model, DistributedDataParallel)
+                else model.state_dict()
+            ),
             "optimizer": optimizer.state_dict(),
             "scheduler": scheduler.state_dict(),
             "scaler": scaler.state_dict(),
             "best_score": best_score,
             "epoch": epoch,
+            "config": config_dict,
         }
 
     for epoch in range(start_epoch, epochs):

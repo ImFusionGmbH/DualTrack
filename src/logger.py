@@ -1,6 +1,7 @@
 import argparse
 from dataclasses import asdict, is_dataclass
 from datetime import datetime
+import json
 import logging
 import os
 import shutil
@@ -102,8 +103,8 @@ class Logger(ABC):
         if isinstance(config, argparse.Namespace):
             config = vars(config)
             config = config.copy()
-            for k in config.keys(): 
-                if is_dataclass(config[k]): 
+            for k in config.keys():
+                if is_dataclass(config[k]):
                     config[k] = asdict(config[k])
         elif is_dataclass(config):
             config = asdict(config)
@@ -159,7 +160,9 @@ class Logger(ABC):
             return None
         else:
             state = torch.load(
-                os.path.join(self.dir, "checkpoint", name), map_location="cpu"
+                os.path.join(self.dir, "checkpoint", name),
+                map_location="cpu",
+                weights_only=False,
             )
             logging.info(f"Loaded checkpoint {name} - keys: {state.keys()}")
             return state
@@ -173,12 +176,12 @@ class Logger(ABC):
     def get_config_as_dict(self):
         return OmegaConf.to_object(self.config)
 
-    def _convert_config_to_dict(self, config): 
+    def _convert_config_to_dict(self, config):
         if isinstance(config, argparse.Namespace):
             config = vars(config)
             config = config.copy()
-            for k in config.keys(): 
-                if is_dataclass(config[k]): 
+            for k in config.keys():
+                if is_dataclass(config[k]):
                     config[k] = asdict(config[k])
         elif is_dataclass(config):
             config = asdict(config)
@@ -203,6 +206,14 @@ class ConsoleLogger(Logger, name="console"):
         print(d)
 
 
+class FileLogger(Logger, name="file"):
+
+    def log_impl(self, d: dict, global_step: Optional[int] = None):
+        with open(os.path.join(self.dir, "metrics.jsonl"), "a") as f:
+            d["step"] = global_step
+            f.write(json.dumps(d))
+            f.write("\n")
+
 
 class TensorBoardLogger(Logger, name="tensorboard"):
     def __init__(self, *args, **kwargs):
@@ -218,7 +229,15 @@ class TensorBoardLogger(Logger, name="tensorboard"):
 
 
 class WandbLogger(Logger, name="wandb"):
-    def __init__(self, dir, config, wandb_kwargs={}, wandb_project='trackerless-ultrasound', *args, **kwargs):
+    def __init__(
+        self,
+        dir,
+        config,
+        wandb_kwargs={},
+        wandb_project="trackerless-ultrasound",
+        *args,
+        **kwargs,
+    ):
         super().__init__(dir, config, *args, **kwargs)
 
         if not _get_rank() == 0:

@@ -1,6 +1,6 @@
 model:
   name: global_encoder_ibot
-  backbone_weights: ${oc.env:IBOT_BACKBONE_WEIGHTS} # path to ibot weights
+  backbone_weights: "???" # path to ibot weights
 
 data:
   version: global_encoder

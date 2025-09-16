@@ -1,4 +1,8 @@
 from collections import defaultdict
+from contextlib import contextmanager
+import os
+import time
+from turtle import pos
 from typing import Literal, Optional
 import h5py
 import pandas as pd
@@ -9,9 +13,19 @@ from torchvision.transforms import functional as F
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 import numpy as np
+from src.utils.pose import invert_pose_matrix
+from torch import nn
+from src.models.model_registry import register_model
+from src.models import get_model
+import logging
 
 # from src.submission import predictor
 from . import dense_displacement_field as ddf
+from src.utils.timer import timer
+
+
+logger = logging.getLogger('predictor')
+logger.setLevel(logging.INFO)
 
 
 class BaseImagePreprocessing:
@@ -28,13 +42,13 @@ class BaseImagePreprocessing:
         raise NotImplementedError()
 
 
-class ImageProcessing(BaseImagePreprocessing, name='default'):
+class ImageProcessing(BaseImagePreprocessing, name="default"):
     def __init__(
         self,
         mean: Optional[float] = None,
         std: Optional[float] = None,
         center_crop_size: Optional[tuple[int, int]] = None,
-    ): 
+    ):
         self.mean = mean
         self.std = std
         self.center_crop_size = center_crop_size
@@ -61,9 +75,17 @@ class ImageProcessing(BaseImagePreprocessing, name='default'):
 
 
 class LocalAndContextImagesPreprocessing(BaseImagePreprocessing, name="glob_loc"):
+
+    def __init__(self, run_preprocessing_on_compute_device=False):
+        self.run_preprocessing_on_compute_device = run_preprocessing_on_compute_device
+
     def __call__(self, image_array, device):
         from torchvision import transforms as T
+
         tensor = torch.tensor(image_array) / 255
+        if self.run_preprocessing_on_compute_device:
+            tensor = tensor.to(device, non_blocking=True)
+
         images_for_features = tensor.clone()
         images = tensor.clone()
         images_for_features = T.CenterCrop((256, 256))(images)
@@ -71,7 +93,39 @@ class LocalAndContextImagesPreprocessing(BaseImagePreprocessing, name="glob_loc"
         images_for_features = images_for_features[None, :, None, :, :]
         images = images[None, :, None, :, :]
 
-        return [], {"images": images.to(device), "images_for_features": images_for_features.to(device)}
+        return [], {
+            "global_encoder_images": images.to(device, non_blocking=True),
+            "local_encoder_images": images_for_features.to(device, non_blocking=True),
+        }
+
+
+@dataclass
+class SeparateLocalAndGlobalPredictorOutputs: 
+    local_model_outputs: torch.Tensor
+    global_model_outputs: torch.Tensor
+
+
+class SeparateLocalAndGlobalPredictor(nn.Module): 
+    def __init__(self, local_model, global_model):
+        super().__init__()
+        self.local_model = local_model 
+        self.global_model = global_model 
+
+    def forward(self, *args, **kwargs):
+        local_model_outputs = self.local_model(*args, **kwargs)
+        global_model_outputs = self.global_model(*args, **kwargs)
+
+        return SeparateLocalAndGlobalPredictorOutputs(
+            local_model_outputs=local_model_outputs, 
+            global_model_outputs=global_model_outputs
+        )
+
+
+@register_model 
+def separate_local_and_global_predictor(*, global_model_cfg, local_model_cfg): 
+    global_model = get_model(**global_model_cfg)
+    local_model = get_model(**local_model_cfg)
+    return SeparateLocalAndGlobalPredictor(local_model, global_model)
 
 
 class Predictor:
@@ -81,14 +135,21 @@ class Predictor:
         model_cfg=None,
         model_path=None,
         expected_raw_image_size_hw: tuple[int, int] = (480, 640),
-        image_processing=ImageProcessing()
+        image_processing=ImageProcessing(),
+        posthoc_calibration_matrix=None,
+        pixel2img_matrix=None,
+        precision=None,
     ):
         self.model_path = model_path
         self.model_cfg = model_cfg
+        self.model = None
         self.device = device
         self.expected_raw_image_size_hw = expected_raw_image_size_hw
         self.image_preprocessing = image_processing
-        
+        self.posthoc_calibration_matrix = posthoc_calibration_matrix
+        self.pixel2img_matrix = pixel2img_matrix
+        self.precision = precision
+
         self._model_outputs = None
         self._model_inputs = None
         self.pred_tracking_matrices_glob = None
@@ -96,13 +157,25 @@ class Predictor:
         self.gt_tracking_matrices_glob = None
         self.gt_tracking_matrices_loc = None
 
+    def _get_autocast_context(self):
+        dtype_dict = {
+            "fp16": torch.float16,
+            "bf16": torch.bfloat16,
+            None: torch.float32,
+        }
+
+        return torch.autocast(
+            torch.device(self.device).type,
+            dtype=dtype_dict[self.precision],
+            enabled=self.precision is not None,
+        )
+
     def setup_model(self):
         if self.model_path:
             self.model = torch.jit.load(self.model_path).eval().to(self.device)
-        else: 
-            assert self.model_cfg is not None 
-            from src.models import get_model
-            self.model = get_model(**self.model_cfg)
+        else:
+            assert self.model_cfg is not None
+            self.model = get_model(**self.model_cfg).eval().to(self.device)
 
     def preprocess_model_inputs(self, array):
         B, H, W = array.shape
@@ -113,8 +186,12 @@ class Predictor:
         assert self.model is not None
         assert self._model_inputs is not None
         with torch.no_grad():
-            args, kwargs = self._model_inputs
-            self._model_outputs = self.model(*args, **kwargs)
+            with self._get_autocast_context():
+                args, kwargs = self._model_inputs
+                self.model = self.model.to(self.device)
+                self._model_outputs = self.model(
+                    kwargs["global_encoder_images"], kwargs["local_encoder_images"]
+                )
 
     def postprocess_model_outputs(self):
         """Do necessary postprocessing steps and update the predictor class in-place.
@@ -122,30 +199,51 @@ class Predictor:
         In this case, we generate the local and global transform sequences.
         """
         model_outputs = self._model_outputs
-        model_outputs = model_outputs[0].cpu().numpy()
+        if isinstance(model_outputs, SeparateLocalAndGlobalPredictorOutputs): 
+            model_outputs_for_glob = model_outputs.global_model_outputs[0].float().cpu().numpy()
+            model_outputs_for_loc = model_outputs.local_model_outputs[0].float().cpu().numpy()
+        else: 
+            model_outputs_for_glob = model_outputs_for_loc = model_outputs[0].float().cpu().numpy()
 
-        N = len(model_outputs)
+        N = len(model_outputs_for_glob)
 
         pred_tracking_glob = np.zeros((N + 1, 4, 4), dtype=np.float32)
         pred_tracking_glob[0] = np.eye(4)
         pred_tracking_loc = np.zeros((N + 1, 4, 4), dtype=np.float32)
         pred_tracking_loc[0] = np.eye(4)
 
+        # convert local tracking
         for i in range(N):
-            pred_rel_pose_matrix = pose_vector_to_matrix(model_outputs[i])
+            pred_rel_pose_matrix = pose_vector_to_matrix(model_outputs_for_loc[i])
             pred_tracking_loc[i + 1] = pred_rel_pose_matrix
+        
+        # convert and accumulate global tracking
+        for i in range(N): 
+            pred_rel_pose_matrix = pose_vector_to_matrix(model_outputs_for_glob[i])
             pred_tracking_glob[i + 1] = pred_tracking_glob[i] @ pred_rel_pose_matrix
 
         self.pred_tracking_matrices_glob = pred_tracking_glob[1:]
         self.pred_tracking_matrices_loc = pred_tracking_loc[1:]
 
+        if self.posthoc_calibration_matrix is not None:
+            C = self.posthoc_calibration_matrix
+            self.pred_tracking_matrices_glob = (
+                C @ self.pred_tracking_matrices_glob @ invert_pose_matrix(C)
+            )
+            self.pred_tracking_matrices_loc = (
+                C @ self.pred_tracking_matrices_loc @ invert_pose_matrix(C)
+            )
+
     def run_inference(self, images_array):
         if self.model is None:
             self.setup_model()
 
-        self.preprocess_model_inputs(images_array)
-        self.run_model()
-        self.postprocess_model_outputs()
+        with timer("Preprocessing"):
+            self.preprocess_model_inputs(images_array)
+        with timer("Running model"):
+            self.run_model()
+        with timer("Postprocessing"):
+            self.postprocess_model_outputs()
 
     def set_ground_truth(self, tracking_sequence):
         """
@@ -170,17 +268,20 @@ class Predictor:
         self.gt_tracking_matrices_glob = gt_tracking_glob[1:]
         self.gt_tracking_matrices_loc = gt_tracking_local[1:]
 
-    def _get_ddf(self, points, transform):
-        orig = points[0:3, :]
-
     def get_ddfs(self, mode="all-pts", device="cpu", landmark_pts=None):
         outputs = {}
+
+        pixel2img_matrix = (
+            self.pixel2img_matrix
+            if self.pixel2img_matrix is not None
+            else PIXEL2IMG_MATRIX_TUS_REC_IMFUSION
+        )
 
         # all points
         H, W = self.expected_raw_image_size_hw
         points_px = ddf.make_image_points(H, W, mode=mode)
         points_px = torch.tensor(points_px).float().to(device)
-        px2img = torch.tensor(PIXEL2IMG_MATRIX).float().to(device)
+        px2img = torch.tensor(pixel2img_matrix).float().to(device)
 
         landmark_pts = (
             landmark_pts
@@ -268,13 +369,26 @@ def pose_vector_to_matrix(params):
     return pose_matrix
 
 
-PIXEL2IMG_MATRIX = np.array(
+PIXEL2IMG_MATRIX_TUS_REC_IMFUSION = np.array(
     [
         [0.22938919, 0.0, 0.0, -73.28984642],
         [0.0, 0.22097969, 0.0, -52.92463589],
         [0.0, 0.0, 1.0, 0.0],
         [0.0, 0.0, 0.0, 1.0],
     ]
+)
+PIXEL2IMG_MATRIX_TUS_REC_CHALLENGE = np.array(
+    [
+        [0.22938919, 0.0, 0.0, 0],
+        [0.0, 0.22097969, 0.0, 0],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
+)
+RECALIBRATION_MATRIX_TUS_REC_CHALLENGE = invert_pose_matrix(
+    np.array(
+        [[1, 0, 0, -73.28984642], [0, 1, 0, -52.92463589], [0, 0, 1, 0], [0, 0, 0, 1]]
+    )
 )
 
 
@@ -316,23 +430,38 @@ def get_relative_pose(t_start, t_end):
     return invert_pose_matrix(t_start) @ t_end
 
 
-def get_predictor(config):     
-    preprocessing_name = config.preprocessing.pop('name', 'default')
-    preprocessing_cfg = config.pop('preprocessing')
+def get_predictor(config, data_fmt="imfusion"):
+    preprocessing_name = config.preprocessing.pop("name", "default")
+    preprocessing_cfg = config.pop("preprocessing")
 
-    preprocessing = BaseImagePreprocessing.registry[preprocessing_name](**preprocessing_cfg)
-
-    return Predictor(
-        **config, 
-        image_processing=preprocessing
+    preprocessing = BaseImagePreprocessing.registry[preprocessing_name](
+        **preprocessing_cfg
     )
+
+    if data_fmt == "imfusion":
+        return Predictor(
+            **config,
+            image_processing=preprocessing,
+            pixel2img_matrix=PIXEL2IMG_MATRIX_TUS_REC_IMFUSION,
+        )
+    elif data_fmt == "tus-rec-challenge":
+        return Predictor(
+            **config,
+            image_processing=preprocessing,
+            pixel2img_matrix=PIXEL2IMG_MATRIX_TUS_REC_CHALLENGE,
+            posthoc_calibration_matrix=RECALIBRATION_MATRIX_TUS_REC_CHALLENGE,
+        )
+    else:
+        raise ValueError(
+            f"Unknown data format {data_fmt}. Supported: imfusion, tus-rec-challenge"
+        )
 
 
 if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", help="Path to inference config")
+    parser.add_argument("--config", "-c", help="Path to inference config")
     parser.add_argument("--h5_file", help="h5 file to test on")
     parser.add_argument(
         "--dataset_csv",
@@ -363,10 +492,9 @@ if __name__ == "__main__":
             images_arr = f["images"][:]
             gt_tracking = f["tracking"][:]
 
-        
         predictor.run_inference(images_arr)
         predictor.set_ground_truth(gt_tracking)
-        ddfs = predictor.get_ddfs(mode="5pt-landmark")
+        ddfs = predictor.get_ddfs(mode="all-pts")
 
         global_err = (((ddfs["pred_glob"] - ddfs["gt_glob"]) ** 2).sum(1) ** 0.5).mean(
             -1
@@ -404,7 +532,7 @@ if __name__ == "__main__":
     # predictor.setup_model()
 #
 # import torch
-# obj = torch.load('experiments/tests/lyric-dragon/debug/debug_objects.pt')
+# obj = torch.load('/h/pwilson/projects/trackerless-us-2/experiments/tests/lyric-dragon/debug/debug_objects.pt')
 #
 # assert torch.allclose(predictor.model(obj['images']), obj['expected_outputs'])
 #

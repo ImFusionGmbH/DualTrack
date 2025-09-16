@@ -1,5 +1,6 @@
 import logging
 import os
+import typing
 
 import torch
 from src.engine.tracking_estimator import BaseTrackingEstimator
@@ -12,7 +13,7 @@ from src.models import local_encoder
 from src.models import global_encoder
 
 
-class DualTrack(nn.Module):
+class DualTrack(BaseTrackingEstimator, nn.Module):
     def __init__(
         self,
         global_encoder,
@@ -30,8 +31,7 @@ class DualTrack(nn.Module):
         self.sampler = sampler
         self.disable_global_encoder = disable_global_encoder
 
-    def forward(self, global_encoder_inputs, local_encoder_inputs):
-
+    def _forward(self, global_encoder_inputs, local_encoder_inputs): 
         local_features = self.local_encoder(local_encoder_inputs)
         sparse_indices = self.sampler(global_encoder_inputs, local_features)
 
@@ -47,7 +47,6 @@ class DualTrack(nn.Module):
             subsampled_global_encoder_inputs, dim=0
         )
 
-
         if self.disable_global_encoder:
             global_features = None
         else:
@@ -57,6 +56,20 @@ class DualTrack(nn.Module):
             local_features, encoder_hidden_states=global_features
         )
         return self.head(tracking_decoder_outputs)
+
+    @typing.overload
+    def forward(self, global_encoder_inputs, local_encoder_inputs):
+        ...
+    
+    @typing.overload 
+    def forward(self, inputs: dict): 
+        ...
+
+    def forward(self, *args, **kwargs):
+        if len(args) > 0 and isinstance(args[0], dict): 
+            return self._forward(**args[0])
+        else:
+            return self._forward(*args, **kwargs)
 
     def forward_dict(self, data):
         device = self.device
@@ -159,10 +172,17 @@ class LocalTrackingEstimationHead(nn.Module):
 
 
 def _get_bert_encoder(implementation="orig", **kwargs):
+    # Ensure default attention implementation is eager for HF and local BERT
+    kwargs.setdefault("attn_implementation", "eager")
+    kwargs.setdefault("_attn_implementation", "eager")
     if implementation == "orig":
         from transformers.models.bert.modeling_bert import BertConfig, BertEncoder
 
-        return BertEncoder(BertConfig(**kwargs))
+        _cfg = BertConfig(**kwargs)
+        # Robustly set private attribute expected by HF modeling code
+        if not hasattr(_cfg, "_attn_implementation") or _cfg._attn_implementation is None:
+            _cfg._attn_implementation = "eager"
+        return BertEncoder(_cfg)
     else:
         from src.models.bert import BertConfig, BertEncoder
 

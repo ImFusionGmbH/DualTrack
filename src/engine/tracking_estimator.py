@@ -1,7 +1,8 @@
 from abc import ABC, abstractmethod
-from typing import Callable, Protocol, runtime_checkable
+from typing import Any, Callable, Mapping, Protocol, runtime_checkable
 from torch import nn
 import torch
+from torch.nn.parallel import DistributedDataParallel
 
 
 class BaseTrackingEstimator(nn.Module, ABC): 
@@ -36,6 +37,9 @@ class LocalEncoderTrackingEstimator(BaseTrackingEstimator):
         else:
             outputs = pred
         targets = batch["targets"].to(self.device)
-        loss = torch.nn.functional.mse_loss(outputs, targets, reduction="none").mean()
+        loss = torch.nn.functional.mse_loss(outputs, targets, reduction="mean")
         return loss
+
+
+
 

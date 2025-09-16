@@ -124,6 +124,7 @@ def pretrained_global_local_context_v1(cfg):
     decoder = BertWrapper(
         BertEncoder(
             BertConfig(
+                attn_implementation="eager",
                 hidden_size=cfg.decoder_hidden_size,
                 intermediate_size=cfg.decoder_hidden_size * 2,
                 num_attention_heads=8,

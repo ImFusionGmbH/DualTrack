@@ -5,7 +5,7 @@ model:
   max_position_embeddings: 4096
   freeze_backbone: true
   use_cache: true
-  backbone_weights: null # stage1_log_dir/checkpoints/best.pt
+  backbone_weights: "???" # Set to the best checkpoint output by stage2, e.g., stage2_log_dir/checkpoints/best.pt
 
 data:
   version: local_encoder

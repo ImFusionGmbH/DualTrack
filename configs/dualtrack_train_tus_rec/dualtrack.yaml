@@ -1,11 +1,11 @@
 model: 
   name: dualtrack_fusion_model
   global_encoder_cfg: 
-    name: global_encoder_cnn
-    checkpoint: /path/to/glob_enc.pt
+    name: global_encoder_cnn # reflect the choice of model used in the global encoder
+    checkpoint: "???" # Set to the best checkpoint output by global encoder, e.g., global_encoder_log_dir/checkpoints/best.pt
   local_encoder_cfg: 
     name: dualtrack_loc_enc_stg3_legacy
-    checkpoint: /path/to/loc_enc.pt
+    checkpoint: "???" # Set to the best checkpoint output by local encoder stage3, e.g., stage3_log_dir/checkpoints/best.pt
     freeze_backbone: true
     use_cache: true
 
@@ -14,7 +14,7 @@ data:
   num_workers: 1
   global_encoder_preprocessing_kw:  
     in_channels: 1
-    mean: [0.5] 
+    mean: [0.5] # update based on which global encoder you are using.
     std: [0.25]
     resize_to: [224, 224]
   local_encoder_preprocessing_kw: 

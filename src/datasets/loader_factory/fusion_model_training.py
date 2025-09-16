@@ -3,6 +3,7 @@ from src import transform as T
 import torch
 from src.datasets import SweepsDatasetWithAdditionalCachedData
 from src.batch_collator import BatchCollator
+from torch import distributed as dist
 
 
 def get_loaders(
@@ -153,13 +154,22 @@ def get_loaders(
         ]
     )
 
+    shuffle_train = True 
+    sampler_train = None
+    sampler_val = None
+    if dist.is_initialized(): 
+        shuffle_train = False
+        sampler_train = torch.utils.data.DistributedSampler(train_dataset)
+        sampler_val = torch.utils.data.DistributedSampler(val_dataset)
+
     if len(train_dataset) == 0:
         train_loader = None
     else:
         train_loader = torch.utils.data.DataLoader(
             train_dataset,
             batch_size=batch_size,
-            shuffle=True,
+            shuffle=shuffle_train,
+            sampler=sampler_train,
             collate_fn=collate_fn,
             num_workers=num_workers,
             pin_memory=pin_memory,
@@ -170,5 +180,6 @@ def get_loaders(
         collate_fn=collate_fn,
         num_workers=num_workers,
         pin_memory=pin_memory,
+        sampler=sampler_val,
     )
     return train_loader, val_loader

@@ -22,6 +22,20 @@ import torch
 from torch import nn
 import einops
 
+from src.models.model_registry import register_model
+
+
+
+_transformer_dict = {
+    'bert': (BertConfig, BertEncoder), 
+    'roformer': (RoFormerConfig, RoFormerEncoder),
+}
+
+
+def get_transformer(version, **kwargs):
+    config_class, encoder_class = _transformer_dict[version]
+    config = config_class(**kwargs)
+    return encoder_class(config)
 
 
 class SplitSpatioTemporalAttentionEncoder(nn.Module):
@@ -86,6 +100,7 @@ class SplitSpatioTemporalAttentionEncoder(nn.Module):
 
         # temporal attention and cross attention layers
         _cfg = BertConfig(
+            attn_implementation="eager",
             hidden_size=hidden_size,
             num_attention_heads=num_attn_heads,
             intermediate_size=intermediate_size,
@@ -215,6 +230,7 @@ class SplitSpatioTemporalAttentionModelForTrackingEstimation(nn.Module):
 
         # temporal attention and cross attention layers
         _cfg = BertConfig(
+            attn_implementation="eager",
             hidden_size=hidden_size,
             num_attention_heads=num_attn_heads,
             intermediate_size=intermediate_size,
@@ -841,6 +857,7 @@ class FeatureExtractorWithSPTAttnAndFMFeaturesEarlyConcat(nn.Module):
         )
 
         bert_config = BertConfig(
+            attn_implementation="eager",
             num_hidden_layers=4,
             num_attention_heads=4,
             intermediate_size=32,
@@ -941,6 +958,7 @@ class FeatureExtractorWithSPTAttnAndFMFeaturesLateConcat(nn.Module):
         self.fm_vit = ViTModel(fm_vit_config, add_pooling_layer=False)
 
         bert_config = BertConfig(
+            attn_implementation="eager",
             num_hidden_layers=4,
             num_attention_heads=4,
             intermediate_size=32,
@@ -1021,6 +1039,7 @@ class ViTForSpatialAttention(nn.Module):
 
 
 class SimpleTemporalAttn(nn.Module):
+
     def __init__(
         self,
         hidden_size=64,
@@ -1029,22 +1048,50 @@ class SimpleTemporalAttn(nn.Module):
         num_attention_heads=4,
         features_only=False,
         max_position_embeddings=1024,
+        transformer_type='bert',
+        input_size=None,
+        attn_implementation='eager',
+        **kwargs,
     ):
         super().__init__()
-        self.encoder = BertEncoder(
-            BertConfig(
-                hidden_size=hidden_size,
-                num_hidden_layers=num_hidden_layers,
-                intermediate_size=intermediate_size,
-                num_attention_heads=num_attention_heads,
-                position_embedding_type="relative_key",
-                max_position_embeddings=max_position_embeddings,
+        if transformer_type == 'bert':
+            self.encoder = BertEncoder(
+                BertConfig(
+                    attn_implementation=attn_implementation,
+                    hidden_size=hidden_size,
+                    num_hidden_layers=num_hidden_layers,
+                    intermediate_size=intermediate_size,
+                    num_attention_heads=num_attention_heads,
+                    position_embedding_type="relative_key",
+                    max_position_embeddings=max_position_embeddings,
+                    **kwargs,
+                )
             )
-        )
-        self.fc = nn.Linear(64, 6)
+        elif transformer_type == 'roformer':
+            self.encoder = RoFormerEncoder(
+                RoFormerConfig(
+                    attn_implementation=attn_implementation,
+                    hidden_size=hidden_size,
+                    num_hidden_layers=num_hidden_layers,
+                    intermediate_size=intermediate_size,
+                    num_attention_heads=num_attention_heads,
+                    max_position_embeddings=max_position_embeddings,
+                    **kwargs,
+                )
+            )
+
+        self.fc = nn.Linear(hidden_size, 6)
         self.features_only = features_only
 
+        if input_size is not None and input_size != hidden_size:
+            self.proj = nn.Linear(input_size, hidden_size)
+        else: 
+            self.proj = None
+
     def forward(self, features):
+        if self.proj is not None: 
+            features = self.proj(features)
+
         hidden_state = self.encoder(features).last_hidden_state
         if self.features_only:
             return hidden_state
@@ -1054,6 +1101,7 @@ class SimpleTemporalAttn(nn.Module):
 
     def predict(self, data, device):
         return self(data["pooled_cnn_features"].to(device))
+
 
 
 # Global and local predictors

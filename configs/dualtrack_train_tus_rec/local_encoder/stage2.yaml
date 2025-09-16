@@ -1,8 +1,8 @@
 model:
   name: dualtrack_loc_enc_stg2
-  backbone_weights: null # stage1_log_dir/checkpoints/best.pt
-  freeze_backbone: false  # true if loading checkpoint
-
+  backbone_weights: "???" # Set to the best checkpoint output by stage1, e.g., stage1_log_dir/checkpoints/best.pt
+  freeze_backbone: True
+  
 data:
   version: local_encoder
   sequence_length_train: 16

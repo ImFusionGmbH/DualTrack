@@ -101,7 +101,7 @@ class SweepData:
         imfusion.save([sweep], path)
 
 
-def load_model_weights(model, path_or_state, strict=True, handle_size_mismatch=True):
+def load_model_weights(model, path_or_state, strict=True, handle_size_mismatch=True, state_dict_prefix=None):
     """
     Helper function to load model weights into a model.
     """
@@ -116,6 +116,11 @@ def load_model_weights(model, path_or_state, strict=True, handle_size_mismatch=T
 
     from torch.nn.modules.utils import consume_prefix_in_state_dict_if_present
     consume_prefix_in_state_dict_if_present(state, '_orig_mod.')
+
+    if state_dict_prefix:
+        state = {
+            k[len(state_dict_prefix):]: v for k, v in state.items() if k.startswith(state_dict_prefix)
+        }
 
     if handle_size_mismatch: 
         model_state = model.state_dict()

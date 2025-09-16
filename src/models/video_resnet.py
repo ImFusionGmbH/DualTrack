@@ -15,6 +15,7 @@ import timm
 from typing import Optional
 
 from src.models.causal_conv import CausalConv3d
+from src.models.utils import temporal_tiled_exact
 
 
 class BasicStem(nn.Sequential):
@@ -319,13 +320,25 @@ class VideoResnetWrapperForFeatureMaps(nn.Module):
         w: width
     """
 
-    def __init__(self, backbone):
+    def __init__(self, backbone, max_subsequence_size=None):
         super().__init__()
         self.backbone = backbone
+        self.max_subsequence_size = max_subsequence_size 
 
     def forward(self, x):
+        B, N, C, H, W = x.shape 
         x = einops.rearrange(x, "b n c h w -> b c n h w")
-        features = self.backbone(x)  # b c n h w
+
+        if self.max_subsequence_size and N > self.max_subsequence_size:
+            roi_t = self.max_subsequence_size
+            halo_t = 32  # >= ~RF/2; bump to 48–64 if you still see seams
+            features = temporal_tiled_exact(
+                self.backbone, x, roi_t, halo_t, amp=False, cpu_agg=False
+            )
+        else:
+            features = self.backbone(x)
+
+        # features = self.backbone(x)  # b c n h w
         features = einops.rearrange(features, "b c n h w -> b n c h w")
         return features
 

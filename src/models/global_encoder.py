@@ -65,6 +65,7 @@ class SimpleModelForSparseTrackingEstimation(BaseTrackingEstimator, nn.Module):
 
         self.proj = torch.nn.Linear(n_features, hidden_size)
         cfg = BertConfig(
+            attn_implementation="eager",
             hidden_size=hidden_size,
             intermediate_size=hidden_size * 2,
             num_hidden_layers=num_hidden_layers,

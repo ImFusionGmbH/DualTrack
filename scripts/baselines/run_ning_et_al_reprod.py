@@ -249,6 +249,7 @@ class NingEtAlModel(nn.Module):
         self.proj = nn.Linear(in_features, hidden_size, bias=False)
         self.transformer = BertEncoder(
             BertConfig(
+                attn_implementation="eager",
                 hidden_size=hidden_size,
                 intermediate_size=hidden_size * 2,
                 num_attention_heads=8,

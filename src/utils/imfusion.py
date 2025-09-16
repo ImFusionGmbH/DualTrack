@@ -6,10 +6,10 @@ import h5py
 import imfusion
 
 
-def h5_to_imfusion_sweep(input_file, output_file):
+def h5_to_imfusion_sweep(input_file, output_file, tracking_key="tracking"):
     with h5py.File(input_file, "r") as F:
         images = F["images"][:]
-        tracking = F["tracking"][:]
+        tracking = F[tracking_key][:]
         spacing = F["spacing"][:]
         dimensions = F["dimensions"][:]
 

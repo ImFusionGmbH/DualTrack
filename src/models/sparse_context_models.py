@@ -54,6 +54,7 @@ class SimpleModelForSparseTrackingEstimation(nn.Module):
             else None
         )
         cfg = BertConfig(
+            attn_implementation="eager",
             hidden_size=hidden_size,
             intermediate_size=hidden_size * 2,
             num_hidden_layers=num_hidden_layers,

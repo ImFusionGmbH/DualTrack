@@ -82,6 +82,8 @@ class SimpleTemporalAttn(nn.Module):
         super().__init__()
         self.encoder = BertEncoder(
             BertConfig(
+                attn_implementation="eager",
+                _attn_implementation="eager",
                 hidden_size=hidden_size,
                 num_hidden_layers=num_hidden_layers,
                 intermediate_size=intermediate_size,
@@ -365,6 +367,8 @@ class GlobalAndLocalContextFusion(nn.Module):
         decoder = BertWrapper(
             BertEncoder(
                 BertConfig(
+                    attn_implementation="eager",
+                    _attn_implementation="eager",
                     hidden_size=cfg.decoder_hidden_size,
                     intermediate_size=cfg.decoder_hidden_size * 2,
                     num_attention_heads=8,
@@ -676,6 +680,8 @@ def global_and_local_context_fusion(
     decoder = BertWrapper(
         BertEncoder(
             BertConfig(
+                attn_implementation="eager",
+                _attn_implementation="eager",
                 hidden_size=decoder_hidden_size,
                 intermediate_size=decoder_hidden_size * 2,
                 num_attention_heads=8,

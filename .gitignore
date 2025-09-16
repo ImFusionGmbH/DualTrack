@@ -1,4 +1,4 @@
-data
+#data
 logs
 network-data
 outputs
@@ -17,5 +17,9 @@ local/
 .submitit
 experiments
 setup.sh
+wandb/
 
 **/__pycache__/** 
+
+.venv
+/data

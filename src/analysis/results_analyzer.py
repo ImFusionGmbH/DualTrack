@@ -2,7 +2,7 @@ from multiprocessing.util import get_temp_dir
 import os
 from pathlib import Path
 from typing import Optional
-from attr import dataclass
+from dataclasses import dataclass
 import h5py
 import numpy as np
 from omegaconf import OmegaConf
@@ -177,7 +177,7 @@ class ResultsAnalyzer:
 def get_accessor():
     ra = ResultsAnalyzer()
     ra.load_method_mapping(
-        "experiments/miccai2024_results.yaml"
+        "experiments/old/miccai2024_results.yaml"
     )
     ra.set_datasets(["tus-rec", "tus-rec-val"])
     ra.set_metric_mapping(MICCAI2025_METRICS)

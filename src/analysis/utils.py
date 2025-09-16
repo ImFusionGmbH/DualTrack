@@ -1,3 +1,5 @@
+import math
+import random
 from matplotlib import pyplot as plt
 from scipy import linalg
 from src.utils.pose import matrix_to_pose_vector
@@ -90,3 +92,10 @@ def _convert_to_6dof(*trackings, **trackings_map):
         for k, v in trackings_map.items()
     }
     return trackings, trackings_map
+
+
+def get_random_us_sweep_as_numpy_array(dataset='tus-rec'):
+    from src.datasets.sweeps_dataset_v2 import SweepsDataset
+    ds = SweepsDataset(dataset)
+    i = random.randint(0, len(ds) - 1)
+    return ds[i]['images']

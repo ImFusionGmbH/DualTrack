@@ -24,7 +24,11 @@ class FrozenModuleWrapper(nn.Module):
             grad_enabled = True 
         if not self.frozen: 
             grad_enabled = True
-        with torch.set_grad_enabled(grad_enabled):
+
+        if not grad_enabled: 
+            with torch.no_grad():
+                return self.module(*args, **kwargs)
+        else:
             return self.module(*args, **kwargs)
 
     def train(self, mode: bool = True):
@@ -173,3 +177,50 @@ class TwoDModuleFor3DSequenceWrapper(nn.Module):
         return x
 
 
+def temporal_tiled_exact(backbone, x_bcnhw, roi_t, halo_t, amp=True, cpu_agg=True):
+    """
+    Runs a backbone (convolutional network) in a tiled fashion along the temporal dimension.
+
+    x_bcnhw: (B,C,N,H,W) on same device as backbone
+    Returns: y of same shape as backbone(x_bcnhw)
+    """
+    B, C, N, H, W = x_bcnhw.shape
+    assert B == 1, "extend as needed"
+    dev = x_bcnhw.device
+
+    # probe to get output channels/dtype
+    a = 0
+    b = min(N, max(roi_t + 2 * halo_t, 1))
+    with torch.autocast(device_type="cuda", enabled=amp):
+        y_probe = backbone(x_bcnhw[:, :, a:b])
+    out = torch.zeros(
+        (1, y_probe.shape[1], N, y_probe.shape[-2], y_probe.shape[-1]),
+        dtype=y_probe.dtype,
+        device=("cpu" if cpu_agg else dev),
+    )
+    weight = torch.ones(
+        (1, 1, roi_t, 1, 1), dtype=out.dtype, device=out.device
+    )  # constant; replace w/ gaussian if you like
+    acc = torch.zeros((1, 1, N, 1, 1), dtype=out.dtype, device=out.device)
+
+    step = max(1, roi_t - 2 * halo_t)  # stride between tile centers
+    starts = list(range(0, max(N - roi_t, 0) + 1, step))
+    if starts[-1] != N - roi_t:
+        starts.append(N - roi_t)
+
+    for s in starts:
+        hl = min(halo_t, s)
+        hr = min(halo_t, N - (s + roi_t))
+        a = s - hl
+        b = s + roi_t + hr
+        with torch.autocast(device_type="cuda", enabled=amp):
+            yp = backbone(x_bcnhw[:, :, a:b])
+        yp_center = yp[:, :, hl : hl + roi_t]  # *** crop away halo ***
+        tgt_sl = slice(s, s + roi_t)
+        if cpu_agg:
+            yp_center = yp_center.to(out.device, non_blocking=True)
+        out[:, :, tgt_sl] += yp_center * weight
+        acc[:, :, tgt_sl] += weight
+
+    out = out / acc.clamp_min(1e-6)
+    return out.to(dev) if cpu_agg else out
