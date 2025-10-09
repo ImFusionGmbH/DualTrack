@@ -60,6 +60,13 @@ cfg.checkpoint = 'path/to/checkpoint.pt'
 
 model = get_model(**cfg)
 ```
+---
+
+## Acknowledgements
+
+We thank the TUS-REC challenge organizing team for putting together the datasets used for training and benchmarking our models! If you find this work interesting please also check out the TUS-REC 2024 [paper](https://arxiv.org/abs/2506.21765) and [dataset](https://zenodo.org/records/11178509).
+
+---
 
 # Usage
 
