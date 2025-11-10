@@ -24,15 +24,37 @@ from torch import distributed as dist
 def default_prepare_batch(batch, device):   
     images = batch["images"].to(device)
     targets = batch["targets"].to(device)
-    return images, targets
+    return images, targets, {}
+
+
+class Task: 
+    def forward(self, model: nn.Module, batch: dict, device: str):
+        raise NotImplementedError()
+
+    def get_loss(self, model: nn.Module, batch: dict, device: str, pred=None):
+        raise NotImplementedError()
+
+
+class DefaultTrackingEstimationTask(Task): 
+    def __init__(self, criterion=nn.MSELoss()): 
+        self.criterion = criterion
+
+    def forward(self, model: nn.Module, batch: dict, device: str):
+        inputs = batch["images"].to(device)
+        return model(inputs)
+
+    def get_loss(self, model: nn.Module, batch: dict, device: str, pred=None):
+        pred = pred if pred is not None else self.forward(model, batch, device)
+
+        targets = batch["targets"].to(device)
+        return self.criterion(pred, targets)
 
 
 @torch.no_grad()
 def run_full_evaluation_loop(
     model: nn.Module,
     loader,
-    criterion = None,
-    prepare_batch_fn = default_prepare_batch,
+    task=DefaultTrackingEstimationTask(),
     device="cuda",
     suffix="/val",
     use_bfloat=False,
@@ -52,17 +74,16 @@ def run_full_evaluation_loop(
     total_items = 0
     for i, data in enumerate(tqdm(loader)):
 
-        inputs, targets = prepare_batch_fn(data, device)
+        # inputs, targets = prepare_batch_fn(data, device)
 
         with torch.autocast(
             torch.device(device).type,
             torch.bfloat16 if use_bfloat else torch.float16,
             enabled=use_amp,
         ):
-            pred = model(inputs)
-            if criterion: 
-                loss = criterion(pred, targets)
-                evaluator.add_metric("loss", loss.item())
+            pred = task.forward(model, data, device)
+            loss = task.get_loss(model, data, device, pred)
+            evaluator.add_metric("loss", loss.item())
 
         for item_idx in range(len(data["tracking"])):
             if isinstance(pred, torch.Tensor):
@@ -121,8 +142,7 @@ def run_training_one_epoch(
     optimizer,
     scheduler,
     scaler,
-    criterion,
-    prepare_batch_fn=default_prepare_batch,
+    task=DefaultTrackingEstimationTask(),
     logger=None,
     device="cuda",
     epoch=None,
@@ -157,7 +177,7 @@ def run_training_one_epoch(
                 logging.info(f"Max iterations {max_iter_per_epoch} reached, stopping epoch")
                 break
 
-            inputs, targets = prepare_batch_fn(data, device)
+            # inputs, targets, extra = prepare_batch_fn(data, device)
             
             # Start timing compute operations
             compute_start_time = time.time()
@@ -167,8 +187,8 @@ def run_training_one_epoch(
                 torch.bfloat16 if use_bfloat else torch.float16,
                 enabled=use_amp,
             ):
-                pred = model(inputs)
-                loss = criterion(pred, targets)
+                pred = task.forward(model, data, device)
+                loss = task.get_loss(model, data, device, pred)
 
             optimizer.zero_grad()
             scaler.scale(loss).backward()
@@ -253,8 +273,7 @@ def run_training_one_epoch(
 def run_validation_loss_loop(
     model: nn.Module,
     loader,
-    criterion,
-    prepare_batch_fn=default_prepare_batch,
+    task=DefaultTrackingEstimationTask(),
     logger=None,
     device="cuda",
     epoch=None,
@@ -265,14 +284,14 @@ def run_validation_loss_loop(
     total_loss = 0
     for i, batch in enumerate(tqdm(loader, desc=f"Validation epoch {epoch}")):
 
-        inputs, targets = prepare_batch_fn(batch, device)
 
         with torch.autocast(
             torch.device(device).type,
             torch.bfloat16 if use_bfloat else torch.float16,
             enabled=use_amp,
         ):
-            loss = criterion(inputs, targets)
+            outputs = task.forward(model, batch, device)
+            loss = task.get_loss(model, batch, device, outputs)
 
         if loss is not None:
             total_loss += loss.item()
@@ -289,8 +308,7 @@ def run_validation_loss_loop(
 def run_full_test_loop(
     model: nn.Module,
     loader,
-    criterion,
-    prepare_batch_fn=default_prepare_batch,
+    task=DefaultTrackingEstimationTask(),
     output_dir: Path = Path("test_output"),
     device="cuda",
     use_bfloat=False,
@@ -346,8 +364,6 @@ def run_full_test_loop(
         sweep_dir = output_dir / "scans" / batch["sweep_id"][0]
         sweep_dir.mkdir(exist_ok=True, parents=True)
 
-        inputs, targets = prepare_batch_fn(batch, device)
-
         # Get predictions
         t0 = time.time()
         with torch.autocast(
@@ -355,7 +371,7 @@ def run_full_test_loop(
             torch.bfloat16 if use_bfloat else torch.float16,
             enabled=use_amp,
         ):
-            pred = model(inputs)
+            pred = task.forward(model, batch, device)
 
         # Update evaluator with predictions
         torch.cuda.synchronize()
@@ -446,9 +462,8 @@ def run_training(
     scheduler,
     logger,
     epochs,
-    criterion=torch.nn.MSELoss(),
     scaler=None,
-    prepare_batch_fn=default_prepare_batch,
+    task=DefaultTrackingEstimationTask(),
     best_score=float("inf"),
     start_epoch=0,
     use_amp=False,
@@ -496,10 +511,9 @@ def run_training(
             model,
             train_loader,
             optimizer,
-            scheduler,
-            criterion=criterion,
+            scheduler,  
+            task=task,
             logger=logger,
-            prepare_batch_fn=prepare_batch_fn,
             scaler=scaler,
             device=device,
             epoch=epoch,
@@ -517,10 +531,9 @@ def run_training(
                         metrics_i = run_full_evaluation_loop(
                             model,
                             loader,
-                            criterion,
-                            prepare_batch_fn,
-                            device,
+                            device=device,
                             logger=logger,
+                            task=task,
                             epoch=epoch,
                             log_metrics=True,
                             use_amp=use_amp,
@@ -536,9 +549,8 @@ def run_training(
                     metrics = run_full_evaluation_loop(
                         model,
                         val_loader,
-                        criterion,
-                        prepare_batch_fn,
-                        device,
+                        task=task,
+                        device=device,
                         logger=logger,
                         epoch=epoch,
                         log_metrics=True,
@@ -560,11 +572,10 @@ def run_training(
                 loss = run_validation_loss_loop(
                     model,
                     val_loader,
-                    criterion, 
-                    prepare_batch_fn, 
-                    logger,
-                    device,
-                    epoch,
+                    task=DefaultTrackingEstimationTask(),
+                    logger=logger,
+                    device=device,
+                    epoch=epoch,
                     use_bfloat=use_bfloat,
                     use_amp=use_amp,
                 )

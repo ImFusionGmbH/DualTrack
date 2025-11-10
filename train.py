@@ -49,6 +49,9 @@ def train(cfg):
         model.load_state_dict(state["model"])
 
     if cfg.get("do_distributed_training"):
+        if not cfg.get("train_impl_v2", False):
+            raise NotImplementedError("Distributed training is only supported for train_impl_v2")
+
         if cfg.get("apply_sync_batchnorm"):
             torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
             def check_syncbn(model):
@@ -80,23 +83,53 @@ def train(cfg):
     best_score = state["best_score"] if state else float("inf")
     start_epoch = state["epoch"] if state else 0
 
-    if cfg.get('train_impl_v2', True):
+    if cfg.get('train_impl_v2', False):
 
-        def prepare_batch(batch, device): 
-            if cfg.get('model_input_key'): 
-                input = batch[cfg.model_input_key].to(device)
-            elif cfg.get('model_input_keymap'): 
-                input = {}
-                for model_input_key, batch_key in cfg.model_input_keymap.items(): 
-                    input[model_input_key] = batch[batch_key].to(device)
-            else: 
-                input = batch['images'].to(device)
-            target = batch['targets'].to(device)
-            return input, target
+        # def prepare_batch(batch, device): 
+        #     if cfg.get('model_input_key'): 
+        #         input = batch[cfg.model_input_key].to(device)
+        #     elif cfg.get('model_input_keymap'): 
+        #         input = {}
+        #         for model_input_key, batch_key in cfg.model_input_keymap.items(): 
+        #             input[model_input_key] = batch[batch_key].to(device)
+        #     else: 
+        #         input = batch['images'].to(device)
+# 
+        #     extra = {}
+        #     if "extra_model_input_keys" in cfg: 
+        #         for extra_key in cfg.extra_model_input_keys: 
+        #             extra[extra_key] = batch[extra_key].to(device)
+# 
+        #     target = batch['targets'].to(device)
+        #     return input, target, extra
 
         from src.engine.loops_v2 import run_training as run_training_v2
+        from src.engine.loops_v2 import Task, DefaultTrackingEstimationTask
+
+        class GlobalEncoderTask(DefaultTrackingEstimationTask): 
+            def forward(self, model: nn.Module, batch: dict, device: torch.device):
+                images= batch['images'].to(device)
+                sample_indices = batch['sample_indices'].to(device)
+                prediction = model(images, sample_indices)
+                return prediction
+
+        class FusionModelTask(DefaultTrackingEstimationTask): 
+            def forward(self, model: nn.Module, batch: dict, device: torch.device):
+                global_encoder_images = batch['global_encoder_images'].to(device)
+                local_encoder_inputs = batch['local_encoder_images'].to(device)
+                prediction = model(global_encoder_images, local_encoder_inputs)
+                return prediction
+
+        task_dict = {
+            "global_encoder": GlobalEncoderTask(),
+            "fusion": FusionModelTask(),
+            "default": DefaultTrackingEstimationTask(),
+        }
+        task = task_dict.get(cfg.get('task_name', 'default'), DefaultTrackingEstimationTask())
+
         run_training_v2(
             model=model, 
+            task=task,
             train_loader=train_loader, 
             val_loader=val_loader, 
             optimizer=optimizer, 
@@ -113,13 +146,12 @@ def train(cfg):
             evaluator_kw=cfg.evaluator_kw,
             log_image_indices=cfg.get("log_image_indices", []),
             config_dict=OmegaConf.to_object(cfg),
-            prepare_batch_fn=prepare_batch,
             tracked_metric=cfg.get('tracked_metric', "ddf/5pt-avg_global_displacement_error")
         )
     
-    
     else: 
-        # TODO this loop implementation is deprecated
+        # TODO this loop implementation should be phased because it does not support DDP. 
+        # However, train_impl_v2 is currently buggy for some models, so we keep this as a fallback.
         run_training(
             model,
             train_loader,
