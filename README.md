@@ -86,7 +86,8 @@ To store a tracked ultrasound sweep, this codebase uses an h5 file with the foll
 - `spacing`: a single array storing the image spacing (millimeters per pixel) as (`W_spacing`, `H_spacing`, $1$)
 - `pixel_to_image`: a single $ 4\times 4$ `float` array containing the transform that maps from the *pixel coordinate system* to the *image coordinate system*. The *pixel coordinate system* has the same orientation as the *image coordinate system*, but its origin is at the top-left of the image, and its units are in pixels rather than millimeters. This is used for [dense displacement field metrics](https://github-pages.ucl.ac.uk/tus-rec-challenge/TUS-REC2024/assessment.html) which are based on the physical positions of image points. 
 
-If you have a collection of `.h5` files in this format, it is easy to create and register a "dataset" with the code base. To prepare a dataset for training and evaluation, first create a `.csv` file containing at least 3 columns: 
+If you have a collection of `.h5` files in this format, it is easy to create and register a "dataset" with the code base. To prepare a dataset for training and evaluation, first create a `.csv` file containing at least 4 columns:
+- an index column
 - `sweep_id`, a unique id for each sweep
 - `processed_sweep_path`, the `.h5` filepath corresponding to the sweep
 - `split`, one of `[train, val]` indicating whether the sweep should be used for 
