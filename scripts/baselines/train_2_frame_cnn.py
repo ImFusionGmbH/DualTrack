@@ -16,7 +16,6 @@ from torchvision.transforms import v2 as T
 from tqdm import tqdm
 
 import src.logger
-from src.configuration import get_training_parser, post_process_training_args
 from src.datasets import DATASET_INFO
 from src.evaluator import TrackingEstimationEvaluator
 from src.optimizer import setup_optimizer

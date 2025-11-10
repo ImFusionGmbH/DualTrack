@@ -3,8 +3,6 @@ import torch
 from torch import optim
 import logging
 
-from src.configuration import BaseConfig
-
 
 @dataclass
 class WarmupConfig:
