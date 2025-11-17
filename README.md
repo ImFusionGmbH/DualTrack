@@ -110,6 +110,13 @@ ds = SweepsDataset(name='tus-rec')
 print(ds[0]['images'].shape) # print the loaded sweep shape (N_timesteps x H x W) array
 ```
 
+### TUS-REC To DualTrack Format Conversion
+If you come from the TUS-REC Challenge, we have provided a convenient script to convert their data into our format. The script [scripts/data/convert_tus_rec_format_to_dualtrack_format.py] will do the job. You simply need to prepare a `.csv` file pointing to the TUS-REC challenge input files. To receive help from the command line about how to run the script, run: 
+```shell 
+python scripts/data/convert_tus_rec_format_to_dualtrack_format.py -h
+```
+Feel free to raise a github issue if there are any problems with using this script.
+
 ## Run Model Training and Evaluation
 
 DualTrack uses the `train.py` script for training and `evaluate.py` script for evaluation, for example:
