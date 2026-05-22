@@ -1,0 +1,28 @@
+predictor: 
+  model_cfg: 
+    name: dualtrack_fusion_model
+    global_encoder_cfg: 
+      name: global_encoder_cnn
+      max_position_embeddings: 4096
+      max_seq_length: 4096
+    local_encoder_cfg: 
+      name: dualtrack_loc_enc_stg3_legacy
+      backbone_cfg:
+        max_subsequence_size: 1024
+      max_position_embeddings: 4096
+      freeze_backbone: true
+      use_cache: true
+    max_position_embeddings: 4096
+    load_kw: 
+      strict: false
+      handle_size_mismatch: true
+    checkpoint: "experiments/2025-Aug-28/12:10.17AM/checkpoint/best.pt"
+
+  preprocessing: 
+    name: glob_loc
+    run_preprocessing_on_compute_device: true
+
+  device: cuda
+  precision: fp16 # <---- saves time and memory but could cost in performance
+
+ddf_device: cuda

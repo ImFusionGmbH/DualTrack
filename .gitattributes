@@ -1,0 +1,3 @@
+notebooks/**      merge=ours
+configs/.experimental/**  merge=ours
+ImFusionPlugin/**  merge=ours

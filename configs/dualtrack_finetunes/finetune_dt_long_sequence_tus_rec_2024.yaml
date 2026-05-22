@@ -1,0 +1,60 @@
+
+model: 
+  # override the original dualtrack architecture to allow longer 
+  # sequence lengths
+  name: dualtrack_fusion_model
+  global_encoder_cfg: 
+    name: global_encoder_cnn
+    max_position_embeddings: 4096 
+    max_seq_length: 4096
+  local_encoder_cfg: 
+    name: dualtrack_loc_enc_stg3_legacy
+    backbone_cfg:
+      max_subsequence_size: 1024
+    max_position_embeddings: 4096
+    freeze_backbone: true
+    use_cache: true
+  max_position_embeddings: 4096
+  load_kw: 
+    strict: false
+    handle_size_mismatch: true
+  checkpoint: data/checkpoints/dualtrack_final.pt
+
+data: 
+  dataset: tus-rec
+  num_workers: 1
+  global_encoder_preprocessing_kw: 
+    in_channels: 1
+    mean: [0]
+    std: [1]
+    resize_to: [224, 224]
+  local_encoder_preprocessing_kw: 
+    resize_to: [256, 256]
+  use_augmentations: false
+  load_preprocessed_images_from_disk: true
+  batch_size: 1
+  features_paths: {} # "local_encoder_intermediates"
+  subsequence_length_train: null
+  
+train: 
+  lr: 0.0001
+  epochs: 20
+  warmup_epochs: 1
+  weight_decay: 0.0
+  val_every: 1
+
+seed: 0
+device: cuda
+use_amp: true
+
+logger: wandb
+logger_kw: 
+  wandb_project: dualtrack
+evaluator_kw:   
+  include_images: true
+
+debug: false
+resume: false
+
+
+

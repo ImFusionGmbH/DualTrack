@@ -1,0 +1,6 @@
+[submodule "external/prostNfound"]
+	path = external/prostNfound
+	url = https://github.com/pfrwilson/prostNfound
+[submodule "external/USFM"]
+	path = external/USFM
+	url = https://github.com/openmedlab/USFM

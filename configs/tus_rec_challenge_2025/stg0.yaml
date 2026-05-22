@@ -1,0 +1,61 @@
+# Finetunes the original DualTrack in order to be able to accept longer image sequences.
+
+model: 
+  name: dualtrack_fusion_model # <- Use base dualtrack dual encoder + fusion model
+  
+  # increase max_position_embeddings to allow longer sequences
+  global_encoder_cfg: 
+    name: global_encoder_cnn
+    max_position_embeddings: 4096
+    max_seq_length: 4096
+  local_encoder_cfg: 
+    name: dualtrack_loc_enc_stg3_legacy
+    backbone_cfg:
+      max_subsequence_size: 1024 # <- Lower this to reduce VRAM footprint by 
+      # splitting the sweep into chunks along the time axis and applying the 
+      # CNN backbone separately to the chunks
+    max_position_embeddings: 4096
+    freeze_backbone: true
+  max_position_embeddings: 4096 
+  load_kw: 
+    strict: false
+    handle_size_mismatch: true
+  checkpoint: data/checkpoints/dualtrack_final.pt # <- load the dualtrack final checkpoint
+
+data: 
+  dataset: tus-rec # train on the tus-rec dataset, which is the same as the original training set of DualTrack
+  num_workers: 1
+  global_encoder_preprocessing_kw: 
+    in_channels: 1
+    mean: [0]
+    std: [1]
+    resize_to: [224, 224]
+  local_encoder_preprocessing_kw: 
+    resize_to: [256, 256]
+  use_augmentations: false
+  load_preprocessed_images_from_disk: false
+  batch_size: 1
+  features_paths: {} 
+  subsequence_length_train: null 
+  
+train: 
+  lr: 0.0001
+  epochs: 20
+  warmup_epochs: 1
+  weight_decay: 0.0
+  val_every: 1
+
+seed: 0
+device: cuda
+use_amp: true
+
+logger: wandb
+logger_kw: 
+  wandb_project: dualtrack
+evaluator_kw:   
+  include_images: true
+
+debug: false
+resume: false
+
+
